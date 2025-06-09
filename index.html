@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>子供会アンケートアプリ</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoi5a2Q5L6b5Lya44Ki44Oz44Kx44O844OI44Ki44OX44OqIiwic2hvcnRfbmFtZSI6IuOCouODs+OCseODvOODiCIsInN0YXJ0X3VybCI6Ii8iLCJkaXNwbGF5Ijoic3RhbmRhbG9uZSIsImJhY2tncm91bmRfY29sb3IiOiIjZmNmY2Y5IiwidGhlbWVfY29sb3IiOiIjMjE4MDhkIn0=">
+</head>
+<body>
+    <div class="app-container">
+        <!-- ナビゲーション -->
+        <nav class="nav">
+            <div class="nav__brand">
+                <h1>子供会アンケート</h1>
+            </div>
+            <div class="nav__menu">
+                <button class="nav__button" data-view="survey">アンケート</button>
+                <button class="nav__button" data-view="manage">管理</button>
+                <button class="nav__button" data-view="data">データ</button>
+                <button class="nav__button" data-view="settings">設定</button>
+            </div>
+        </nav>
+
+        <!-- アンケート画面 -->
+        <div class="view" id="survey-view">
+            <div class="container">
+                <div class="card">
+                    <div class="card__header">
+                        <h2>アンケート回答</h2>
+                        <p class="text-secondary">すべての項目にお答えください</p>
+                    </div>
+                    <div class="card__body">
+                        <form id="survey-form">
+                            <div id="survey-questions"></div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn--primary btn--full-width">回答を送信</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 管理画面 -->
+        <div class="view hidden" id="manage-view">
+            <div class="container">
+                <div class="flex gap-16">
+                    <div class="manage-editor">
+                        <div class="card">
+                            <div class="card__header">
+                                <h2>アンケート項目編集</h2>
+                                <button class="btn btn--secondary" id="add-question-btn">質問を追加</button>
+                            </div>
+                            <div class="card__body">
+                                <div id="question-editor">
+                                    <!-- 質問編集エリア -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="manage-preview">
+                        <div class="card">
+                            <div class="card__header">
+                                <h3>プレビュー</h3>
+                            </div>
+                            <div class="card__body">
+                                <div id="survey-preview">
+                                    <!-- プレビューエリア -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- データ管理画面 -->
+        <div class="view hidden" id="data-view">
+            <div class="container">
+                <div class="card">
+                    <div class="card__header">
+                        <h2>回答データ管理</h2>
+                        <div class="data-controls">
+                            <input type="text" id="search-input" class="form-control" placeholder="回答者で検索...">
+                            <button class="btn btn--secondary" id="export-data-btn">データエクスポート</button>
+                        </div>
+                    </div>
+                    <div class="card__body">
+                        <div id="response-list">
+                            <!-- 回答一覧 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 設定画面 -->
+        <div class="view hidden" id="settings-view">
+            <div class="container">
+                <div class="settings-grid">
+                    <!-- GitHub設定 -->
+                    <div class="card">
+                        <div class="card__header">
+                            <h2>GitHub連携設定</h2>
+                        </div>
+                        <div class="card__body">
+                            <form id="github-settings-form">
+                                <div class="form-group">
+                                    <label class="form-label">Personal Access Token</label>
+                                    <input type="password" id="github-token" class="form-control" placeholder="ghp_...">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">ユーザー名</label>
+                                    <input type="text" id="github-username" class="form-control" placeholder="GitHubユーザー名">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">リポジトリ名</label>
+                                    <input type="text" id="github-repo" class="form-control" placeholder="survey-app">
+                                </div>
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="auto-sync"> 自動同期を有効にする
+                                    </label>
+                                </div>
+                                <button type="submit" class="btn btn--primary">設定を保存</button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- 氏名リスト管理 -->
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>氏名リスト管理</h3>
+                        </div>
+                        <div class="card__body">
+                            <div class="name-manager">
+                                <div class="form-group">
+                                    <input type="text" id="new-name-input" class="form-control" placeholder="新しい氏名を追加">
+                                    <button class="btn btn--secondary" id="add-name-btn">追加</button>
+                                </div>
+                                <div id="name-list" class="name-list">
+                                    <!-- 氏名一覧 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ソースコード管理 -->
+                    <div class="card">
+                        <div class="card__header">
+                            <h3>ソースコード管理</h3>
+                        </div>
+                        <div class="card__body">
+                            <div class="source-controls">
+                                <button class="btn btn--secondary" id="view-source-btn">ソースコード表示</button>
+                                <button class="btn btn--primary" id="push-to-github-btn">GitHubにプッシュ</button>
+                            </div>
+                            <div class="status-info">
+                                <p>最終更新: <span id="last-update">未設定</span></p>
+                                <p>バージョン: <span id="app-version">1.0.0</span></p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ソースコードビューアモーダル -->
+        <div class="modal hidden" id="source-modal">
+            <div class="modal__overlay" id="modal-overlay"></div>
+            <div class="modal__content">
+                <div class="modal__header">
+                    <h3>ソースコード表示</h3>
+                    <button class="modal__close" id="modal-close">&times;</button>
+                </div>
+                <div class="modal__body">
+                    <div class="source-tabs">
+                        <button class="tab-button active" data-file="html">index.html</button>
+                        <button class="tab-button" data-file="css">style.css</button>
+                        <button class="tab-button" data-file="js">app.js</button>
+                    </div>
+                    <div class="source-editor">
+                        <textarea id="source-editor" class="form-control"></textarea>
+                    </div>
+                    <div class="modal__footer">
+                        <button class="btn btn--secondary" id="save-source-btn">保存</button>
+                        <button class="btn btn--primary" id="commit-source-btn">コミット</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 質問編集モーダル -->
+        <div class="modal hidden" id="question-modal">
+            <div class="modal__overlay"></div>
+            <div class="modal__content">
+                <div class="modal__header">
+                    <h3>質問項目編集</h3>
+                    <button class="modal__close">&times;</button>
+                </div>
+                <div class="modal__body">
+                    <form id="question-edit-form">
+                        <div class="form-group">
+                            <label class="form-label">質問タイトル</label>
+                            <input type="text" id="question-title" class="form-control">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">質問タイプ</label>
+                            <select id="question-type" class="form-control">
+                                <option value="text">テキスト入力</option>
+                                <option value="textarea">長文入力</option>
+                                <option value="select">プルダウン</option>
+                                <option value="radio">ラジオボタン</option>
+                                <option value="radio_with_textarea">ラジオボタン+自由記述</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="options-group">
+                            <label class="form-label">選択肢（改行区切り）</label>
+                            <textarea id="question-options" class="form-control" rows="4"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="question-required"> 必須項目
+                            </label>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal__footer">
+                    <button class="btn btn--secondary" id="cancel-question-btn">キャンセル</button>
+                    <button class="btn btn--primary" id="save-question-btn">保存</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- トースト通知 -->
+        <div class="toast-container" id="toast-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
