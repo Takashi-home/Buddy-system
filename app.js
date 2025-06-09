@@ -720,6 +720,7 @@ class SurveyApp {
             autoSync: document.getElementById('auto-sync').checked
         };
 
+        this.surveyData.lastUpdated = new Date().toISOString(); // 追加
         this.saveData();
         this.showToast('GitHub設定を保存しました', 'success');
     }
