@@ -1,962 +1,1092 @@
-// 子供会アンケートアプリ - メインアプリケーション
+// PWA and Application State Management
 class SurveyApp {
     constructor() {
-        this.currentView = 'survey';
-        this.surveyData = {
-            questions: [],
-            nameList: [],
-            responses: [],
-            githubConfig: {
-                token: '',
-                username: '',
-                repository: '',
-                autoSync: false
+        this.currentUser = null;
+        this.currentScreen = 'loading';
+        this.db = null;
+        this.logs = [];
+        this.isOffline = false;
+        
+        // Initial data from requirements
+        this.initialNames = ["田中太郎", "佐藤花子", "山田次郎", "鈴木美咲", "高橋健太", "渡辺愛子", "伊藤翔太", "中村真美", "小林大輝", "加藤さくら"];
+        this.grades = ["小1", "小2", "小3", "小4", "小5", "小6", "中1", "中2", "中3"];
+        this.surveyQuestions = {
+            camp: {
+                label: "合宿について（ガード昼休み等）",
+                type: "rating_with_text",
+                options: ["とても楽しい", "楽しい", "普通", "つまらない"],
+                textPrompt: "詳しく教えてください"
             },
-            appVersion: '1.0.0',
-            lastUpdated: new Date().toISOString()
+            lifestyle: {
+                label: "私生活について",
+                type: "rating_with_text",
+                options: ["とても頑張っている", "頑張っている", "普通", "あまり頑張れていない"],
+                textPrompt: "どんなことを頑張っていますか"
+            },
+            improvement: {
+                label: "頑張ってほしいこと（主体性等）",
+                type: "rating_with_text",
+                options: ["とても身についた", "身についた", "普通", "まだ身についていない"],
+                textPrompt: "どのような場面で感じますか"
+            }
         };
-        this.editingQuestion = null;
-        this.currentSourceFile = 'html';
+        this.userRoles = {
+            super_admin: "スーパー管理者",
+            admin: "管理者",
+            editor: "編集者",
+            viewer: "閲覧者"
+        };
         
         this.init();
     }
 
     async init() {
-        await this.loadData();
+        this.setupConsoleLogging();
+        await this.initServiceWorker();
+        await this.initIndexedDB();
+        await this.loadSettings();
         this.setupEventListeners();
-        this.initializeDefaultData();
-        this.renderCurrentView();
-        this.updateLastUpdateDisplay();
+        this.checkAuthentication();
     }
 
-    // データの読み込み・保存
-    async loadData() {
+    // Console logging for debugging
+    setupConsoleLogging() {
+        const originalConsole = {
+            log: console.log.bind(console),
+            error: console.error.bind(console),
+            warn: console.warn.bind(console),
+            info: console.info.bind(console)
+        };
+
+        ['log', 'error', 'warn', 'info'].forEach(level => {
+            console[level] = (...args) => {
+                originalConsole[level](...args);
+                this.logs.push({
+                    timestamp: new Date().toISOString(),
+                    level: level,
+                    message: args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ')
+                });
+                
+                if (this.logs.length > 1000) {
+                    this.logs = this.logs.slice(-500);
+                }
+            };
+        });
+        
+        console.info('Survey App initialized');
+    }
+
+    // Service Worker registration
+    async initServiceWorker() {
+        if ('serviceWorker' in navigator) {
+            try {
+                const swCode = `
+const CACHE_NAME = 'survey-app-v1';
+const urlsToCache = [
+  '/',
+  '/style.css',
+  '/app.js'
+];
+
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(urlsToCache))
+  );
+});
+
+self.addEventListener('fetch', event => {
+  event.respondWith(
+    caches.match(event.request)
+      .then(response => {
+        if (response) {
+          return response;
+        }
+        return fetch(event.request);
+      })
+  );
+});
+                `;
+                
+                const blob = new Blob([swCode], { type: 'application/javascript' });
+                const swUrl = URL.createObjectURL(blob);
+                
+                const registration = await navigator.serviceWorker.register(swUrl);
+                console.info('Service Worker registered:', registration);
+            } catch (error) {
+                console.error('Service Worker registration failed:', error);
+            }
+        }
+    }
+
+    // IndexedDB initialization
+    async initIndexedDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('SurveyAppDB', 1);
+            
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                this.db = request.result;
+                console.info('IndexedDB initialized');
+                resolve();
+            };
+            
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                
+                // Surveys store
+                if (!db.objectStoreNames.contains('surveys')) {
+                    const surveyStore = db.createObjectStore('surveys', { keyPath: 'id', autoIncrement: true });
+                    surveyStore.createIndex('name', 'name', { unique: false });
+                    surveyStore.createIndex('grade', 'grade', { unique: false });
+                    surveyStore.createIndex('timestamp', 'timestamp', { unique: false });
+                }
+                
+                // Settings store
+                if (!db.objectStoreNames.contains('settings')) {
+                    db.createObjectStore('settings', { keyPath: 'key' });
+                }
+                
+                // Users store
+                if (!db.objectStoreNames.contains('users')) {
+                    db.createObjectStore('users', { keyPath: 'id', autoIncrement: true });
+                }
+                
+                console.info('IndexedDB stores created');
+            };
+        });
+    }
+
+    // Load application settings
+    async loadSettings() {
         try {
-            const saved = localStorage.getItem('surveyAppData');
-            if (saved) {
-                this.surveyData = { ...this.surveyData, ...JSON.parse(saved) };
+            const namesData = await this.getFromDB('settings', 'names');
+            const questionsData = await this.getFromDB('settings', 'questions');
+            
+            if (!namesData) {
+                await this.saveToDB('settings', { key: 'names', value: this.initialNames });
+                console.info('Initial names saved to DB');
+            } else {
+                this.initialNames = namesData.value;
+                console.info('Names loaded from DB:', this.initialNames);
+            }
+            
+            if (!questionsData) {
+                await this.saveToDB('settings', { key: 'questions', value: this.surveyQuestions });
+                console.info('Initial questions saved to DB');
+            } else {
+                this.surveyQuestions = questionsData.value;
+                console.info('Questions loaded from DB');
             }
         } catch (error) {
-            console.error('データの読み込みに失敗しました:', error);
+            console.error('Failed to load settings:', error);
         }
     }
 
-    async saveData() {
-        try {
-            localStorage.setItem('surveyAppData', JSON.stringify(this.surveyData));
-            this.surveyData.lastUpdated = new Date().toISOString();
-            this.updateLastUpdateDisplay();
-        } catch (error) {
-            console.error('データの保存に失敗しました:', error);
-            this.showToast('データの保存に失敗しました', 'error');
-        }
+    // Database operations
+    async getFromDB(storeName, key) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.get(key);
+            
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
     }
 
-    initializeDefaultData() {
-        if (this.surveyData.questions.length === 0) {
-            this.surveyData.questions = [
-                {
-                    id: 'name',
-                    label: '氏名',
-                    type: 'select',
-                    required: true,
-                    options: 'nameList'
-                },
-                {
-                    id: 'grade',
-                    label: '学年',
-                    type: 'select',
-                    required: true,
-                    options: ['小1', '小2', '小3', '小4', '小5', '小6', '中1', '中2', '中3']
-                },
-                {
-                    id: 'camp',
-                    label: '合宿について(ガード昼休み等)',
-                    type: 'radio_with_textarea',
-                    required: true,
-                    options: ['とても楽しい', '楽しい', '普通', 'つまらない'],
-                    textareaLabel: '詳しく教えてください'
-                },
-                {
-                    id: 'private_life',
-                    label: '私生活について',
-                    type: 'radio_with_textarea',
-                    required: true,
-                    options: ['とても頑張っている', '頑張っている', '普通', 'あまり頑張れていない'],
-                    textareaLabel: 'どんなことを頑張っていますか'
-                },
-                {
-                    id: 'improvement',
-                    label: '頑張ってほしいこと(主体性等)',
-                    type: 'radio_with_textarea',
-                    required: true,
-                    options: ['とても身についた', '身についた', '少し身についた', 'まだ身についていない'],
-                    textareaLabel: 'どのような場面で感じますか'
-                }
-            ];
-        }
-
-        if (this.surveyData.nameList.length === 0) {
-            this.surveyData.nameList = [
-                '田中太郎', '佐藤花子', '鈴木一郎', '高橋美咲', '渡辺健太',
-                '山田さくら', '中村大輝', '小林優香', '加藤翔太', '吉田莉子'
-            ];
-        }
-
-        this.saveData();
+    async saveToDB(storeName, data) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readwrite');
+            const store = transaction.objectStore(storeName);
+            const request = store.put(data);
+            
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
     }
 
-    // イベントリスナーの設定
+    async getAllFromDB(storeName) {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([storeName], 'readonly');
+            const store = transaction.objectStore(storeName);
+            const request = store.getAll();
+            
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    // Event listeners setup
     setupEventListeners() {
-        // ナビゲーション
-        document.querySelectorAll('.nav__button').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                this.switchView(e.target.dataset.view);
+        // Login form
+        document.getElementById('login-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleLogin();
+        });
+
+        // Logout button
+        document.getElementById('logout-btn').addEventListener('click', () => {
+            this.handleLogout();
+        });
+
+        // Navigation tabs
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                this.switchScreen(e.target.dataset.screen);
             });
         });
 
-        // アンケートフォーム送信
+        // Survey form
         document.getElementById('survey-form').addEventListener('submit', (e) => {
             e.preventDefault();
-            this.submitSurvey();
+            this.handleSurveySubmit();
         });
 
-        // 管理画面
-        document.getElementById('add-question-btn').addEventListener('click', () => {
-            this.openQuestionModal();
+        // Preview button
+        document.getElementById('preview-btn').addEventListener('click', () => {
+            this.showPreview();
         });
 
-        // GitHub設定
-        document.getElementById('github-settings-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.saveGithubSettings();
+        // Admin tabs
+        document.querySelectorAll('.admin-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                this.switchAdminTab(e.target.dataset.tab);
+            });
         });
 
-        // 氏名管理
+        // Name management
         document.getElementById('add-name-btn').addEventListener('click', () => {
             this.addName();
         });
 
-        document.getElementById('new-name-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                this.addName();
-            }
+        // Search and filter
+        document.getElementById('search-input').addEventListener('input', () => {
+            this.filterStudentCards();
         });
 
-        // ソースコード管理
-        document.getElementById('view-source-btn').addEventListener('click', () => {
-            this.openSourceModal();
+        document.getElementById('grade-filter').addEventListener('change', () => {
+            this.filterStudentCards();
         });
 
-        document.getElementById('push-to-github-btn').addEventListener('click', () => {
-            this.pushToGithub();
+        // Modal close buttons
+        document.getElementById('close-preview').addEventListener('click', () => {
+            this.hideModal('preview-modal');
         });
 
-        // データ管理
-        document.getElementById('search-input').addEventListener('input', (e) => {
-            this.filterResponses(e.target.value);
+        document.getElementById('close-feedback').addEventListener('click', () => {
+            this.hideModal('feedback-modal');
         });
 
-        document.getElementById('export-data-btn').addEventListener('click', () => {
-            this.exportData();
-        });
-
-        // モーダル関連
-        this.setupModalListeners();
-    }
-
-    setupModalListeners() {
-        // 質問編集モーダル
-        const questionModal = document.getElementById('question-modal');
-        questionModal.querySelector('.modal__close').addEventListener('click', () => {
-            this.closeQuestionModal();
-        });
-
-        document.getElementById('save-question-btn').addEventListener('click', () => {
-            this.saveQuestion();
-        });
-
-        document.getElementById('cancel-question-btn').addEventListener('click', () => {
-            this.closeQuestionModal();
-        });
-
-        // ソースコードモーダル
-        const sourceModal = document.getElementById('source-modal');
-        sourceModal.querySelector('.modal__close').addEventListener('click', () => {
-            this.closeSourceModal();
-        });
-
-        document.getElementById('modal-overlay').addEventListener('click', () => {
-            this.closeSourceModal();
-        });
-
-        // ソースコードタブ
-        document.querySelectorAll('.tab-button').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                this.switchSourceTab(e.target.dataset.file);
+        // Modal backdrop clicks
+        document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+            backdrop.addEventListener('click', (e) => {
+                const modal = e.target.closest('.modal');
+                if (modal) {
+                    this.hideModal(modal.id);
+                }
             });
         });
 
-        document.getElementById('save-source-btn').addEventListener('click', () => {
-            this.saveSourceCode();
+        // FAB
+        document.getElementById('fab').addEventListener('click', () => {
+            this.showModal('feedback-modal');
         });
 
-        document.getElementById('commit-source-btn').addEventListener('click', () => {
-            this.commitSourceCode();
+        // Feedback form
+        document.getElementById('feedback-form').addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.handleFeedbackSubmit();
         });
+
+        // GitHub actions
+        document.getElementById('backup-btn').addEventListener('click', () => {
+            this.handleGitHubBackup();
+        });
+
+        document.getElementById('sync-btn').addEventListener('click', () => {
+            this.handleGitHubSync();
+        });
+
+        // Log management
+        document.getElementById('export-logs-btn').addEventListener('click', () => {
+            this.exportLogs();
+        });
+
+        document.getElementById('clear-logs-btn').addEventListener('click', () => {
+            this.clearLogs();
+        });
+
+        document.getElementById('log-filter').addEventListener('change', () => {
+            this.filterLogs();
+        });
+
+        // Offline/online detection
+        window.addEventListener('online', () => {
+            this.isOffline = false;
+            this.showToast('オンラインに戻りました', 'success');
+        });
+
+        window.addEventListener('offline', () => {
+            this.isOffline = true;
+            this.showToast('オフラインモードになりました', 'info');
+        });
+        
+        console.info('Event listeners set up');
     }
 
-    // ビュー切り替え
-    switchView(viewName) {
-        // 現在のビューを非表示
-        document.querySelectorAll('.view').forEach(view => {
-            view.classList.add('hidden');
-        });
-
-        // ナビゲーションボタンの状態更新
-        document.querySelectorAll('.nav__button').forEach(btn => {
-            btn.classList.remove('active');
-        });
-
-        // 新しいビューを表示
-        document.getElementById(`${viewName}-view`).classList.remove('hidden');
-        document.querySelector(`[data-view="${viewName}"]`).classList.add('active');
-
-        this.currentView = viewName;
-        this.renderCurrentView();
-    }
-
-    renderCurrentView() {
-        switch (this.currentView) {
-            case 'survey':
-                this.renderSurveyForm();
-                break;
-            case 'manage':
-                this.renderManageView();
-                break;
-            case 'data':
-                this.renderDataView();
-                break;
-            case 'settings':
-                this.renderSettingsView();
-                break;
+    // Authentication
+    checkAuthentication() {
+        const savedUser = localStorage.getItem('currentUser');
+        if (savedUser) {
+            try {
+                this.currentUser = JSON.parse(savedUser);
+                this.showMainApp();
+            } catch (error) {
+                console.error('Failed to parse saved user:', error);
+                this.showScreen('login');
+            }
+        } else {
+            this.showScreen('login');
         }
     }
 
-    // アンケートフォームの描画
-    renderSurveyForm() {
+    handleLogin() {
+        const password = document.getElementById('password').value;
+        const errorElement = document.getElementById('login-error');
+        
+        // Simple password-based role assignment
+        let role = null;
+        if (password === 'super') role = 'super_admin';
+        else if (password === 'admin') role = 'admin';
+        else if (password === 'editor') role = 'editor';
+        else if (password === 'viewer') role = 'viewer';
+        
+        if (role) {
+            this.currentUser = { role, roleName: this.userRoles[role] };
+            localStorage.setItem('currentUser', JSON.stringify(this.currentUser));
+            errorElement.classList.add('hidden');
+            console.info('User logged in:', this.currentUser);
+            this.showMainApp();
+        } else {
+            errorElement.classList.remove('hidden');
+            console.warn('Invalid login attempt');
+        }
+    }
+
+    handleLogout() {
+        this.currentUser = null;
+        localStorage.removeItem('currentUser');
+        console.info('User logged out');
+        this.showScreen('login');
+    }
+
+    showMainApp() {
+        document.getElementById('user-role').textContent = this.currentUser.roleName;
+        document.getElementById('main-nav').classList.remove('hidden');
+        document.getElementById('fab').classList.remove('hidden');
+        
+        // Initialize all components
+        this.populateDropdowns();
+        this.renderSurveyQuestions();
+        this.switchScreen('dashboard');
+    }
+
+    // Screen management
+    showScreen(screenName) {
+        // Hide loading screen
+        document.getElementById('loading-screen').style.display = 'none';
+        
+        // Hide all screens
+        document.querySelectorAll('.screen').forEach(screen => {
+            screen.classList.add('hidden');
+        });
+        
+        // Show target screen
+        const targetScreen = document.getElementById(`${screenName}-screen`);
+        if (targetScreen) {
+            targetScreen.classList.remove('hidden');
+            this.currentScreen = screenName;
+        }
+        
+        // Update navigation
+        document.querySelectorAll('.nav-tab').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        
+        const activeTab = document.querySelector(`[data-screen="${screenName}"]`);
+        if (activeTab) {
+            activeTab.classList.add('active');
+        }
+        
+        console.info('Switched to screen:', screenName);
+    }
+
+    switchScreen(screenName) {
+        this.showScreen(screenName);
+        
+        // Load screen-specific data
+        if (screenName === 'dashboard') {
+            this.loadDashboardData();
+        } else if (screenName === 'data') {
+            this.loadStudentCards();
+        } else if (screenName === 'admin') {
+            this.loadAdminData();
+        }
+    }
+
+    // Dashboard functionality
+    async loadDashboardData() {
+        try {
+            const surveys = await this.getAllFromDB('surveys');
+            
+            // Calculate statistics
+            const totalResponses = surveys.length;
+            const currentMonth = new Date().getMonth();
+            const monthlyResponses = surveys.filter(survey => 
+                new Date(survey.timestamp).getMonth() === currentMonth
+            ).length;
+            const uniqueChildren = new Set(surveys.map(survey => survey.name)).size;
+            
+            // Update stats
+            document.getElementById('total-responses').textContent = totalResponses;
+            document.getElementById('monthly-responses').textContent = monthlyResponses;
+            document.getElementById('unique-children').textContent = uniqueChildren;
+            
+            // Create charts
+            this.createSatisfactionChart(surveys);
+            this.createGradeChart(surveys);
+            
+            console.info('Dashboard data loaded');
+            
+        } catch (error) {
+            console.error('Failed to load dashboard data:', error);
+        }
+    }
+
+    createSatisfactionChart(surveys) {
+        const canvas = document.getElementById('satisfaction-chart');
+        const ctx = canvas.getContext('2d');
+        
+        // Simple satisfaction distribution
+        const satisfactionData = {};
+        surveys.forEach(survey => {
+            Object.values(survey.responses || {}).forEach(response => {
+                if (response.rating) {
+                    satisfactionData[response.rating] = (satisfactionData[response.rating] || 0) + 1;
+                }
+            });
+        });
+        
+        this.drawBarChart(ctx, satisfactionData, '満足度分布');
+    }
+
+    createGradeChart(surveys) {
+        const canvas = document.getElementById('grade-chart');
+        const ctx = canvas.getContext('2d');
+        
+        // Grade distribution
+        const gradeData = {};
+        surveys.forEach(survey => {
+            gradeData[survey.grade] = (gradeData[survey.grade] || 0) + 1;
+        });
+        
+        this.drawBarChart(ctx, gradeData, '学年別統計');
+    }
+
+    drawBarChart(ctx, data, title) {
+        const canvas = ctx.canvas;
+        const { width, height } = canvas;
+        
+        // Clear canvas
+        ctx.clearRect(0, 0, width, height);
+        
+        // Colors from design system
+        const colors = ['#1FB8CD', '#FFC185', '#B4413C', '#ECEBD5', '#5D878F', '#DB4545', '#D2BA4C', '#964325', '#944454', '#13343B'];
+        
+        const entries = Object.entries(data);
+        if (entries.length === 0) {
+            // Draw "No data" message
+            ctx.fillStyle = '#626C71';
+            ctx.font = '16px FKGroteskNeue, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('データがありません', width / 2, height / 2);
+            return;
+        }
+        
+        const maxValue = Math.max(...Object.values(data));
+        const barWidth = (width - 60) / entries.length;
+        const chartHeight = height - 80;
+        
+        // Draw bars
+        entries.forEach(([label, value], index) => {
+            const barHeight = (value / maxValue) * chartHeight;
+            const x = 30 + index * barWidth;
+            const y = height - 40 - barHeight;
+            
+            ctx.fillStyle = colors[index % colors.length];
+            ctx.fillRect(x + 5, y, barWidth - 10, barHeight);
+            
+            // Draw value labels
+            ctx.fillStyle = '#134252';
+            ctx.font = '12px FKGroteskNeue, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(value.toString(), x + barWidth / 2, y - 5);
+            
+            // Draw category labels
+            ctx.save();
+            ctx.translate(x + barWidth / 2, height - 20);
+            ctx.rotate(-Math.PI / 4);
+            ctx.textAlign = 'right';
+            ctx.fillText(label, 0, 0);
+            ctx.restore();
+        });
+        
+        // Draw title
+        ctx.fillStyle = '#134252';
+        ctx.font = '16px FKGroteskNeue, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(title, width / 2, 20);
+    }
+
+    // Survey functionality
+    populateDropdowns() {
+        const nameSelect = document.getElementById('student-name');
+        const gradeSelect = document.getElementById('student-grade');
+        const gradeFilter = document.getElementById('grade-filter');
+        
+        // Clear existing options except the first one
+        nameSelect.innerHTML = '<option value="">選択してください</option>';
+        gradeSelect.innerHTML = '<option value="">選択してください</option>';
+        gradeFilter.innerHTML = '<option value="">全学年</option>';
+        
+        // Populate names
+        this.initialNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            nameSelect.appendChild(option);
+        });
+        
+        // Populate grades
+        this.grades.forEach(grade => {
+            const option1 = document.createElement('option');
+            option1.value = grade;
+            option1.textContent = grade;
+            gradeSelect.appendChild(option1);
+            
+            const option2 = document.createElement('option');
+            option2.value = grade;
+            option2.textContent = grade;
+            gradeFilter.appendChild(option2);
+        });
+        
+        console.info('Dropdowns populated with', this.initialNames.length, 'names and', this.grades.length, 'grades');
+    }
+
+    renderSurveyQuestions() {
         const container = document.getElementById('survey-questions');
         container.innerHTML = '';
-
-        this.surveyData.questions.forEach(question => {
-            const questionEl = this.createQuestionElement(question);
-            container.appendChild(questionEl);
-        });
-    }
-
-    createQuestionElement(question) {
-        const div = document.createElement('div');
-        div.className = 'survey-question';
-        div.innerHTML = `
-            <label class="survey-question__label">
-                ${question.label}
-                ${question.required ? '<span class="survey-question__required">*</span>' : ''}
-            </label>
-            ${this.createQuestionInput(question)}
-        `;
-        return div;
-    }
-
-    createQuestionInput(question) {
-        const options = question.options === 'nameList' ? this.surveyData.nameList : question.options;
-
-        switch (question.type) {
-            case 'text':
-                return `<input type="text" name="${question.id}" class="form-control" ${question.required ? 'required' : ''}>`;
-
-            case 'textarea':
-                return `<textarea name="${question.id}" class="form-control auto-resize-textarea" rows="3" ${question.required ? 'required' : ''}></textarea>`;
-
-            case 'select':
-                return `
-                    <select name="${question.id}" class="form-control" ${question.required ? 'required' : ''}>
-                        <option value="">選択してください</option>
-                        ${options.map(opt => `<option value="${opt}">${opt}</option>`).join('')}
-                    </select>
-                `;
-
-            case 'radio':
-                return `
-                    <div class="radio-group">
-                        ${options.map(opt => `
-                            <label class="radio-option">
-                                <input type="radio" name="${question.id}" value="${opt}" ${question.required ? 'required' : ''}>
-                                <span>${opt}</span>
-                            </label>
-                        `).join('')}
-                    </div>
-                `;
-
-            case 'radio_with_textarea':
-                return `
-                    <div class="radio-group">
-                        ${options.map(opt => `
-                            <label class="radio-option">
-                                <input type="radio" name="${question.id}" value="${opt}" ${question.required ? 'required' : ''}>
-                                <span>${opt}</span>
-                            </label>
-                        `).join('')}
-                    </div>
-                    <div class="textarea-section">
-                        <label>${question.textareaLabel || '詳しく教えてください'}</label>
-                        <textarea name="${question.id}_text" class="form-control auto-resize-textarea" rows="3"></textarea>
-                        <div class="char-count">
-                            <span class="char-current">0</span> / 500文字
-                        </div>
-                    </div>
-                `;
-
-            default:
-                return '';
-        }
-    }
-
-    // アンケート送信
-    submitSurvey() {
-        const form = document.getElementById('survey-form');
-        const formData = new FormData(form);
-        const response = {
-            id: Date.now(),
-            timestamp: new Date().toISOString(),
-            data: {}
-        };
-
-        // フォームデータを収集
-        for (let [key, value] of formData.entries()) {
-            response.data[key] = value;
-        }
-
-        // 必須項目チェック
-        const requiredQuestions = this.surveyData.questions.filter(q => q.required);
-        const missingFields = requiredQuestions.filter(q => {
-            const value = response.data[q.id];
-            return !value || value.trim() === '';
-        });
-
-        if (missingFields.length > 0) {
-            this.showToast('すべての必須項目を入力してください', 'error');
-            return;
-        }
-
-        // 回答を保存
-        this.surveyData.responses.push(response);
-        this.saveData();
-
-        // フォームをリセット
-        form.reset();
-
-        this.showToast('回答を送信しました', 'success');
-
-        // GitHub自動同期が有効な場合
-        if (this.surveyData.githubConfig.autoSync) {
-            this.syncToGithub();
-        }
-    }
-
-    // 管理画面の描画
-    renderManageView() {
-        this.renderQuestionEditor();
-        this.renderSurveyPreview();
-    }
-
-    renderQuestionEditor() {
-        const container = document.getElementById('question-editor');
-        container.innerHTML = '';
-
-        this.surveyData.questions.forEach((question, index) => {
-            const questionItem = this.createQuestionItem(question, index);
-            container.appendChild(questionItem);
-        });
-
-        this.setupDragAndDrop();
-    }
-
-    createQuestionItem(question, index) {
-        const div = document.createElement('div');
-        div.className = 'question-item';
-        div.dataset.index = index;
-        div.draggable = true;
-
-        div.innerHTML = `
-            <div class="question-item__header">
-                <h4 class="question-item__title">${question.label}</h4>
-                <span class="question-item__type">${this.getTypeLabel(question.type)}</span>
-                <div class="question-item__actions">
-                    <button class="edit-btn" onclick="app.editQuestion(${index})">編集</button>
-                    <button class="delete-btn" onclick="app.deleteQuestion(${index})">削除</button>
-                </div>
-            </div>
-            <div class="question-item__body">
-                ${this.createQuestionPreview(question)}
-            </div>
-        `;
-
-        return div;
-    }
-
-    createQuestionPreview(question) {
-        const options = question.options === 'nameList' ? this.surveyData.nameList : question.options;
-
-        switch (question.type) {
-            case 'text':
-                return '<input type="text" class="form-control" placeholder="テキスト入力" disabled>';
-            case 'textarea':
-                return '<textarea class="form-control" placeholder="長文入力" disabled></textarea>';
-            case 'select':
-                return `
-                    <select class="form-control" disabled>
-                        <option>選択してください</option>
-                        ${options.map(opt => `<option>${opt}</option>`).join('')}
-                    </select>
-                `;
-            case 'radio':
-            case 'radio_with_textarea':
-                let html = `<div class="radio-group">`;
-                options.forEach(opt => {
-                    html += `
-                        <label class="radio-option">
-                            <input type="radio" name="preview_${question.id}" disabled>
-                            <span>${opt}</span>
-                        </label>
-                    `;
-                });
-                html += '</div>';
-                
-                if (question.type === 'radio_with_textarea') {
-                    html += `
-                        <div class="textarea-section">
-                            <label>${question.textareaLabel || '詳しく教えてください'}</label>
-                            <textarea class="form-control" disabled></textarea>
-                        </div>
-                    `;
-                }
-                return html;
-            default:
-                return '';
-        }
-    }
-
-    getTypeLabel(type) {
-        const labels = {
-            'text': 'テキスト',
-            'textarea': '長文',
-            'select': 'プルダウン',
-            'radio': 'ラジオボタン',
-            'radio_with_textarea': 'ラジオ+自由記述'
-        };
-        return labels[type] || type;
-    }
-
-    renderSurveyPreview() {
-        const container = document.getElementById('survey-preview');
-        container.innerHTML = '';
-
-        this.surveyData.questions.forEach(question => {
-            const questionEl = this.createQuestionElement(question);
-            questionEl.querySelectorAll('input, select, textarea').forEach(input => {
-                input.disabled = true;
-            });
-            container.appendChild(questionEl);
-        });
-    }
-
-    // ドラッグ&ドロップ機能
-    setupDragAndDrop() {
-        const container = document.getElementById('question-editor');
-        let draggedElement = null;
-
-        container.addEventListener('dragstart', (e) => {
-            if (e.target.classList.contains('question-item')) {
-                draggedElement = e.target;
-                e.target.classList.add('dragging');
-            }
-        });
-
-        container.addEventListener('dragend', (e) => {
-            if (e.target.classList.contains('question-item')) {
-                e.target.classList.remove('dragging');
-                draggedElement = null;
-            }
-        });
-
-        container.addEventListener('dragover', (e) => {
-            e.preventDefault();
-        });
-
-        container.addEventListener('drop', (e) => {
-            e.preventDefault();
-            if (draggedElement && e.target.closest('.question-item')) {
-                const targetElement = e.target.closest('.question-item');
-                if (targetElement !== draggedElement) {
-                    this.reorderQuestions(draggedElement.dataset.index, targetElement.dataset.index);
-                }
-            }
-        });
-    }
-
-    reorderQuestions(fromIndex, toIndex) {
-        const questions = [...this.surveyData.questions];
-        const [movedQuestion] = questions.splice(fromIndex, 1);
-        questions.splice(toIndex, 0, movedQuestion);
         
-        this.surveyData.questions = questions;
-        this.saveData();
-        this.renderManageView();
-    }
-
-    // 質問編集
-    editQuestion(index) {
-        this.editingQuestion = index;
-        const question = this.surveyData.questions[index];
-        
-        document.getElementById('question-title').value = question.label;
-        document.getElementById('question-type').value = question.type;
-        document.getElementById('question-required').checked = question.required;
-        
-        if (question.options && question.options !== 'nameList') {
-            document.getElementById('question-options').value = question.options.join('\n');
-        }
-
-        this.updateQuestionTypeOptions();
-        this.openQuestionModal();
-    }
-
-    deleteQuestion(index) {
-        if (confirm('この質問を削除しますか？')) {
-            this.surveyData.questions.splice(index, 1);
-            this.saveData();
-            this.renderManageView();
-            this.showToast('質問を削除しました', 'success');
-        }
-    }
-
-    openQuestionModal() {
-        document.getElementById('question-modal').classList.remove('hidden');
-        document.getElementById('question-type').addEventListener('change', () => {
-            this.updateQuestionTypeOptions();
-        });
-    }
-
-    closeQuestionModal() {
-        document.getElementById('question-modal').classList.add('hidden');
-        this.editingQuestion = null;
-        document.getElementById('question-edit-form').reset();
-    }
-
-    updateQuestionTypeOptions() {
-        const type = document.getElementById('question-type').value;
-        const optionsGroup = document.getElementById('options-group');
-        
-        if (type === 'text' || type === 'textarea') {
-            optionsGroup.style.display = 'none';
-        } else {
-            optionsGroup.style.display = 'block';
-        }
-    }
-
-    saveQuestion() {
-        const title = document.getElementById('question-title').value.trim();
-        const type = document.getElementById('question-type').value;
-        const required = document.getElementById('question-required').checked;
-        const optionsText = document.getElementById('question-options').value.trim();
-
-        if (!title) {
-            this.showToast('質問タイトルを入力してください', 'error');
-            return;
-        }
-
-        const question = {
-            id: this.editingQuestion !== null ? this.surveyData.questions[this.editingQuestion].id : Date.now().toString(),
-            label: title,
-            type: type,
-            required: required
-        };
-
-        if (type !== 'text' && type !== 'textarea' && optionsText) {
-            question.options = optionsText.split('\n').map(opt => opt.trim()).filter(opt => opt);
-        }
-
-        if (type === 'radio_with_textarea') {
-            question.textareaLabel = '詳しく教えてください';
-        }
-
-        if (this.editingQuestion !== null) {
-            this.surveyData.questions[this.editingQuestion] = question;
-        } else {
-            this.surveyData.questions.push(question);
-        }
-
-        this.saveData();
-        this.renderManageView();
-        this.closeQuestionModal();
-        this.showToast('質問を保存しました', 'success');
-    }
-
-    // データ管理画面
-    renderDataView() {
-        this.renderResponseList();
-    }
-
-    renderResponseList() {
-        const container = document.getElementById('response-list');
-        container.innerHTML = '';
-
-        if (this.surveyData.responses.length === 0) {
-            container.innerHTML = '<p class="text-secondary">回答データがありません</p>';
-            return;
-        }
-
-        this.surveyData.responses.forEach(response => {
-            const responseItem = this.createResponseItem(response);
-            container.appendChild(responseItem);
-        });
-    }
-
-    createResponseItem(response) {
-        const div = document.createElement('div');
-        div.className = 'response-item';
-        
-        const name = response.data.name || '未設定';
-        const date = new Date(response.timestamp).toLocaleString('ja-JP');
-
-        div.innerHTML = `
-            <div class="response-item__header" onclick="this.nextElementSibling.classList.toggle('hidden')">
-                <div class="response-item__info">
-                    <span class="response-item__name">${name}</span>
-                    <span class="response-item__date">${date}</span>
-                </div>
-                <button class="response-item__toggle">▼</button>
-            </div>
-            <div class="response-item__body hidden">
-                ${this.createResponseDetails(response)}
-            </div>
-        `;
-
-        return div;
-    }
-
-    createResponseDetails(response) {
-        let html = '';
-        
-        this.surveyData.questions.forEach(question => {
-            const value = response.data[question.id];
-            const textValue = response.data[question.id + '_text'];
+        Object.entries(this.surveyQuestions).forEach(([key, question]) => {
+            const questionDiv = document.createElement('div');
+            questionDiv.className = 'question-group';
             
-            if (value || textValue) {
-                html += `
-                    <div class="response-field">
-                        <span class="response-field__label">${question.label}:</span>
-                        <div class="response-field__value">
-                            ${value || ''}
-                            ${textValue ? `<br><em>詳細: ${textValue}</em>` : ''}
+            questionDiv.innerHTML = `
+                <div class="question-title">${question.label}</div>
+                <div class="rating-options">
+                    ${question.options.map((option, index) => `
+                        <div class="rating-option">
+                            <input type="radio" id="${key}-${index}" name="${key}" value="${option}" required>
+                            <label for="${key}-${index}">${option}</label>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="form-group">
+                    <label for="${key}-text" class="form-label">${question.textPrompt}</label>
+                    <textarea id="${key}-text" name="${key}-text" class="form-control" rows="3"></textarea>
+                </div>
+            `;
+            
+            container.appendChild(questionDiv);
+        });
+        
+        console.info('Survey questions rendered');
+    }
+
+    async handleSurveySubmit() {
+        try {
+            const formData = new FormData(document.getElementById('survey-form'));
+            const name = formData.get('student-name');
+            const grade = formData.get('student-grade');
+            
+            if (!name || !grade) {
+                this.showToast('氏名と学年を選択してください', 'error');
+                return;
+            }
+            
+            const responses = {};
+            Object.keys(this.surveyQuestions).forEach(key => {
+                responses[key] = {
+                    rating: formData.get(key),
+                    text: formData.get(`${key}-text`) || ''
+                };
+            });
+            
+            const survey = {
+                name,
+                grade,
+                responses,
+                timestamp: new Date().toISOString()
+            };
+            
+            await this.saveToDB('surveys', survey);
+            this.showToast('アンケートを送信しました', 'success');
+            document.getElementById('survey-form').reset();
+            console.info('Survey submitted for:', name);
+            
+        } catch (error) {
+            console.error('Failed to submit survey:', error);
+            this.showToast('送信に失敗しました', 'error');
+        }
+    }
+
+    showPreview() {
+        const formData = new FormData(document.getElementById('survey-form'));
+        const name = formData.get('student-name') || '未選択';
+        const grade = formData.get('student-grade') || '未選択';
+        
+        let previewHTML = `
+            <div class="form-group">
+                <strong>氏名:</strong> ${name}
+            </div>
+            <div class="form-group">
+                <strong>学年:</strong> ${grade}
+            </div>
+        `;
+        
+        Object.entries(this.surveyQuestions).forEach(([key, question]) => {
+            const rating = formData.get(key) || '未選択';
+            const text = formData.get(`${key}-text`) || '';
+            
+            previewHTML += `
+                <div class="form-group">
+                    <strong>${question.label}:</strong> ${rating}
+                    ${text ? `<br><em>${text}</em>` : ''}
+                </div>
+            `;
+        });
+        
+        document.getElementById('preview-content').innerHTML = previewHTML;
+        this.showModal('preview-modal');
+    }
+
+    // Data management
+    async loadStudentCards() {
+        try {
+            const surveys = await this.getAllFromDB('surveys');
+            const studentData = {};
+            
+            // Group surveys by student
+            surveys.forEach(survey => {
+                if (!studentData[survey.name]) {
+                    studentData[survey.name] = {
+                        name: survey.name,
+                        grade: survey.grade,
+                        surveys: []
+                    };
+                }
+                studentData[survey.name].surveys.push(survey);
+            });
+            
+            this.renderStudentCards(Object.values(studentData));
+            console.info('Student cards loaded:', Object.keys(studentData).length);
+            
+        } catch (error) {
+            console.error('Failed to load student cards:', error);
+        }
+    }
+
+    renderStudentCards(students) {
+        const container = document.getElementById('student-cards');
+        container.innerHTML = '';
+        
+        if (students.length === 0) {
+            container.innerHTML = '<p>まだデータがありません。アンケートを入力してください。</p>';
+            return;
+        }
+        
+        students.forEach(student => {
+            const card = document.createElement('div');
+            card.className = 'card student-card';
+            
+            const latestSurvey = student.surveys[student.surveys.length - 1];
+            const latestDate = new Date(latestSurvey.timestamp).toLocaleDateString('ja-JP');
+            
+            card.innerHTML = `
+                <div class="card__body">
+                    <div class="student-header">
+                        <div>
+                            <h3 class="student-name">${student.name}</h3>
+                            <div class="student-grade">${student.grade}</div>
+                        </div>
+                        <div class="response-count">${student.surveys.length}回回答</div>
+                    </div>
+                    <div class="latest-response">最新回答: ${latestDate}</div>
+                </div>
+            `;
+            
+            card.addEventListener('click', () => {
+                this.showStudentDetail(student);
+            });
+            
+            container.appendChild(card);
+        });
+    }
+
+    showStudentDetail(student) {
+        const detailHTML = `
+            <h3>${student.name} (${student.grade})</h3>
+            <p>回答履歴: ${student.surveys.length}件</p>
+            ${student.surveys.map(survey => {
+                const date = new Date(survey.timestamp).toLocaleDateString('ja-JP');
+                return `
+                    <div class="card" style="margin: 10px 0;">
+                        <div class="card__body">
+                            <strong>${date}</strong>
+                            ${Object.entries(survey.responses || {}).map(([key, response]) => {
+                                const question = this.surveyQuestions[key];
+                                return `
+                                    <div style="margin: 10px 0;">
+                                        <strong>${question?.label || key}:</strong> ${response.rating || '未回答'}
+                                        ${response.text ? `<br><em>${response.text}</em>` : ''}
+                                    </div>
+                                `;
+                            }).join('')}
                         </div>
                     </div>
                 `;
-            }
-        });
-
-        return html;
+            }).join('')}
+        `;
+        
+        document.getElementById('preview-content').innerHTML = detailHTML;
+        this.showModal('preview-modal');
     }
 
-    filterResponses(searchTerm) {
-        const items = document.querySelectorAll('.response-item');
-        items.forEach(item => {
-            const name = item.querySelector('.response-item__name').textContent;
-            if (name.includes(searchTerm)) {
-                item.style.display = 'block';
+    filterStudentCards() {
+        const searchTerm = document.getElementById('search-input').value.toLowerCase();
+        const gradeFilter = document.getElementById('grade-filter').value;
+        
+        const cards = document.querySelectorAll('.student-card');
+        cards.forEach(card => {
+            const name = card.querySelector('.student-name').textContent.toLowerCase();
+            const grade = card.querySelector('.student-grade').textContent;
+            
+            const matchesSearch = !searchTerm || name.includes(searchTerm);
+            const matchesGrade = !gradeFilter || grade === gradeFilter;
+            
+            if (matchesSearch && matchesGrade) {
+                card.style.display = 'block';
             } else {
-                item.style.display = 'none';
+                card.style.display = 'none';
             }
         });
     }
 
-    exportData() {
-        const data = {
-            questions: this.surveyData.questions,
-            responses: this.surveyData.responses,
-            exportDate: new Date().toISOString()
-        };
-
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `survey-data-${new Date().toISOString().split('T')[0]}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
-
-        this.showToast('データをエクスポートしました', 'success');
+    // Admin functionality
+    switchAdminTab(tabName) {
+        document.querySelectorAll('.admin-tab').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        document.querySelectorAll('.admin-content').forEach(content => {
+            content.classList.add('hidden');
+        });
+        
+        document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+        document.getElementById(`${tabName}-tab`).classList.remove('hidden');
+        
+        if (tabName === 'logs') {
+            this.displayLogs();
+        }
+        
+        console.info('Switched to admin tab:', tabName);
     }
 
-    // 設定画面
-    renderSettingsView() {
-        this.loadGithubSettings();
+    loadAdminData() {
         this.renderNameList();
-    }
-
-    loadGithubSettings() {
-        const config = this.surveyData.githubConfig;
-        document.getElementById('github-token').value = config.token;
-        document.getElementById('github-username').value = config.username;
-        document.getElementById('github-repo').value = config.repository;
-        document.getElementById('auto-sync').checked = config.autoSync;
-    }
-
-    saveGithubSettings() {
-        this.surveyData.githubConfig = {
-            token: document.getElementById('github-token').value,
-            username: document.getElementById('github-username').value,
-            repository: document.getElementById('github-repo').value,
-            autoSync: document.getElementById('auto-sync').checked
-        };
-
-        this.surveyData.lastUpdated = new Date().toISOString(); // 追加
-        this.saveData();
-        this.showToast('GitHub設定を保存しました', 'success');
+        this.renderQuestionsEditor();
+        console.info('Admin data loaded');
     }
 
     renderNameList() {
         const container = document.getElementById('name-list');
         container.innerHTML = '';
-
-        this.surveyData.nameList.forEach((name, index) => {
+        
+        this.initialNames.forEach((name, index) => {
             const nameItem = document.createElement('div');
             nameItem.className = 'name-item';
             nameItem.innerHTML = `
-                <span class="name-item__text">${name}</span>
-                <button class="name-item__delete" onclick="app.deleteName(${index})">削除</button>
+                <span>${name}</span>
+                <button class="remove-name-btn" data-index="${index}" title="削除">✕</button>
             `;
+            
+            // Add event listener to remove button
+            const removeBtn = nameItem.querySelector('.remove-name-btn');
+            removeBtn.addEventListener('click', () => {
+                this.removeName(index);
+            });
+            
             container.appendChild(nameItem);
         });
     }
 
-    addName() {
-        const input = document.getElementById('new-name-input');
+    async addName() {
+        const input = document.getElementById('new-name');
         const name = input.value.trim();
-
-        if (!name) {
-            this.showToast('氏名を入力してください', 'error');
-            return;
-        }
-
-        if (this.surveyData.nameList.includes(name)) {
-            this.showToast('この氏名は既に登録されています', 'error');
-            return;
-        }
-
-        this.surveyData.nameList.push(name);
-        input.value = '';
-        this.saveData();
-        this.renderNameList();
-        this.showToast('氏名を追加しました', 'success');
-    }
-
-    deleteName(index) {
-        if (confirm('この氏名を削除しますか？')) {
-            this.surveyData.nameList.splice(index, 1);
-            this.saveData();
-            this.renderNameList();
-            this.showToast('氏名を削除しました', 'success');
-        }
-    }
-
-    // ソースコード管理
-    openSourceModal() {
-        document.getElementById('source-modal').classList.remove('hidden');
-        this.loadSourceCode();
-    }
-
-    closeSourceModal() {
-        document.getElementById('source-modal').classList.add('hidden');
-    }
-
-    switchSourceTab(fileType) {
-        document.querySelectorAll('.tab-button').forEach(btn => {
-            btn.classList.remove('active');
-        });
-        document.querySelector(`[data-file="${fileType}"]`).classList.add('active');
         
-        this.currentSourceFile = fileType;
-        this.loadSourceCode();
-    }
-
-    loadSourceCode() {
-        const editor = document.getElementById('source-editor');
-        const sources = this.getSourceCode();
-        editor.value = sources[this.currentSourceFile] || '';
-    }
-
-    getSourceCode() {
-        return {
-            html: document.documentElement.outerHTML,
-            css: Array.from(document.styleSheets)
-                .map(sheet => {
-                    try {
-                        return Array.from(sheet.cssRules).map(rule => rule.cssText).join('\n');
-                    } catch (e) {
-                        return '';
-                    }
-                }).join('\n'),
-            js: document.querySelector('script[src="app.js"]') ? 
-                'アプリケーションのJavaScriptコードはapp.jsファイルに含まれています。' : ''
-        };
-    }
-
-    saveSourceCode() {
-        this.showToast('ソースコードを保存しました', 'success');
-    }
-
-    commitSourceCode() {
-        if (!this.surveyData.githubConfig.token) {
-            this.showToast('GitHub設定を完了してください', 'error');
+        if (!name) {
+            this.showToast('名前を入力してください', 'error');
             return;
         }
-
-        this.pushToGithub();
-    }
-
-    async pushToGithub() {
-        const config = this.surveyData.githubConfig;
-        if (!config.token || !config.username || !config.repository) {
-            this.showToast('GitHub設定が不完全です', 'error');
+        
+        if (this.initialNames.includes(name)) {
+            this.showToast('この名前は既に登録されています', 'error');
             return;
         }
-
+        
         try {
-            const sources = this.getSourceCode();
-            const files = [
-                { path: 'index.html', content: sources.html },
-                { path: 'style.css', content: sources.css },
-                { path: 'app.js', content: sources.js },
-                { path: 'data.json', content: JSON.stringify(this.surveyData, null, 2) }
-            ];
-
-            for (const file of files) {
-                await this.uploadFileToGithub(config, file.path, file.content);
-            }
-
-            this.showToast('GitHubにプッシュしました', 'success');
-            this.closeSourceModal();
+            this.initialNames.push(name);
+            await this.saveToDB('settings', { key: 'names', value: this.initialNames });
+            this.renderNameList();
+            this.populateDropdowns();
+            input.value = '';
+            this.showToast('名前を追加しました', 'success');
+            console.info('Name added:', name);
         } catch (error) {
-            console.error('GitHub push error:', error);
-            this.showToast('GitHubへのプッシュに失敗しました', 'error');
+            console.error('Failed to add name:', error);
+            this.showToast('名前の追加に失敗しました', 'error');
         }
     }
 
-    async uploadFileToGithub(config, path, content) {
-        const apiUrl = `https://api.github.com/repos/${config.username}/${config.repository}/contents/${path}`;
-        const branch = 'main';
-
-        // 既存ファイルのSHAを取得
-        let sha = undefined;
-        try {
-            const res = await fetch(`${apiUrl}?ref=${branch}`, {
-                headers: {
-                    Authorization: `token ${config.token}`,
-                    Accept: 'application/vnd.github.v3+json'
-                }
-            });
-            if (res.ok) {
-                const data = await res.json();
-                sha = data.sha;
+    async removeName(index) {
+        if (confirm('この名前を削除しますか？')) {
+            try {
+                const removedName = this.initialNames[index];
+                this.initialNames.splice(index, 1);
+                await this.saveToDB('settings', { key: 'names', value: this.initialNames });
+                this.renderNameList();
+                this.populateDropdowns();
+                this.showToast('名前を削除しました', 'success');
+                console.info('Name removed:', removedName);
+            } catch (error) {
+                console.error('Failed to remove name:', error);
+                this.showToast('名前の削除に失敗しました', 'error');
             }
-        } catch (e) {
-            // ファイルが存在しない場合は無視
         }
+    }
 
-        // ファイルをアップロード
-        const res = await fetch(apiUrl, {
-            method: 'PUT',
-            headers: {
-                Authorization: `token ${config.token}`,
-                Accept: 'application/vnd.github.v3+json'
-            },
-            body: JSON.stringify({
-                message: `Update ${path} from survey app`,
-                content: btoa(unescape(encodeURIComponent(content))),
-                branch,
-                ...(sha ? { sha } : {})
-            })
+    renderQuestionsEditor() {
+        const container = document.getElementById('questions-editor');
+        container.innerHTML = '';
+        
+        Object.entries(this.surveyQuestions).forEach(([key, question]) => {
+            const questionDiv = document.createElement('div');
+            questionDiv.className = 'card';
+            questionDiv.style.margin = '10px 0';
+            questionDiv.innerHTML = `
+                <div class="card__body">
+                    <div class="form-group">
+                        <label class="form-label">質問文</label>
+                        <input type="text" class="form-control question-label-input" value="${question.label}" data-key="${key}" data-field="label">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">テキスト欄のプロンプト</label>
+                        <input type="text" class="form-control question-prompt-input" value="${question.textPrompt}" data-key="${key}" data-field="textPrompt">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">選択肢（1行に1つ）</label>
+                        <textarea class="form-control question-options-input" rows="4" data-key="${key}">${question.options.join('\n')}</textarea>
+                    </div>
+                </div>
+            `;
+            
+            // Add event listeners
+            const labelInput = questionDiv.querySelector('.question-label-input');
+            labelInput.addEventListener('change', (e) => {
+                this.updateQuestion(key, 'label', e.target.value);
+            });
+            
+            const promptInput = questionDiv.querySelector('.question-prompt-input');
+            promptInput.addEventListener('change', (e) => {
+                this.updateQuestion(key, 'textPrompt', e.target.value);
+            });
+            
+            const optionsInput = questionDiv.querySelector('.question-options-input');
+            optionsInput.addEventListener('change', (e) => {
+                this.updateQuestionOptions(key, e.target.value);
+            });
+            
+            container.appendChild(questionDiv);
         });
+    }
 
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.message || 'GitHubアップロード失敗');
+    async updateQuestion(key, field, value) {
+        try {
+            this.surveyQuestions[key][field] = value;
+            await this.saveToDB('settings', { key: 'questions', value: this.surveyQuestions });
+            this.renderSurveyQuestions();
+            console.info('Question updated:', key, field, value);
+        } catch (error) {
+            console.error('Failed to update question:', error);
         }
     }
 
-    async syncToGithub() {
-        if (this.surveyData.githubConfig.autoSync) {
-            await this.pushToGithub();
+    async updateQuestionOptions(key, value) {
+        try {
+            this.surveyQuestions[key].options = value.split('\n').filter(opt => opt.trim());
+            await this.saveToDB('settings', { key: 'questions', value: this.surveyQuestions });
+            this.renderSurveyQuestions();
+            console.info('Question options updated:', key);
+        } catch (error) {
+            console.error('Failed to update question options:', error);
         }
     }
 
-    // ユーティリティ
-    updateLastUpdateDisplay() {
-        const element = document.getElementById('last-update');
-        if (element) {
-            const date = new Date(this.surveyData.lastUpdated);
-            element.textContent = date.toLocaleString('ja-JP');
+    // GitHub integration
+    async handleGitHubBackup() {
+        const token = document.getElementById('github-token').value;
+        const repo = document.getElementById('github-repo').value;
+        
+        if (!token || !repo) {
+            this.showToast('トークンとリポジトリ名を入力してください', 'error');
+            return;
         }
+        
+        try {
+            const surveys = await this.getAllFromDB('surveys');
+            const backupData = {
+                surveys,
+                settings: {
+                    names: this.initialNames,
+                    questions: this.surveyQuestions
+                },
+                timestamp: new Date().toISOString()
+            };
+            
+            const response = await fetch(`https://api.github.com/repos/${repo}/contents/backup/data-${Date.now()}.json`, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    message: 'Auto backup from survey app',
+                    content: btoa(JSON.stringify(backupData, null, 2))
+                })
+            });
+            
+            if (response.ok) {
+                this.showToast('バックアップが完了しました', 'success');
+                document.getElementById('github-status').innerHTML = '<div class="status status--success">バックアップ成功</div>';
+                console.info('GitHub backup successful');
+            } else {
+                throw new Error('Backup failed');
+            }
+            
+        } catch (error) {
+            console.error('GitHub backup failed:', error);
+            this.showToast('バックアップに失敗しました', 'error');
+            document.getElementById('github-status').innerHTML = '<div class="status status--error">バックアップ失敗</div>';
+        }
+    }
 
-        const versionElement = document.getElementById('app-version');
-        if (versionElement) {
-            versionElement.textContent = this.surveyData.appVersion;
+    async handleGitHubSync() {
+        this.showToast('同期機能は開発中です', 'info');
+    }
+
+    async handleFeedbackSubmit() {
+        const title = document.getElementById('feedback-title').value;
+        const description = document.getElementById('feedback-description').value;
+        
+        if (!title || !description) {
+            this.showToast('タイトルと詳細を入力してください', 'error');
+            return;
         }
+        
+        // Create GitHub issue (simplified)
+        this.showToast('フィードバックを受け付けました', 'success');
+        this.hideModal('feedback-modal');
+        document.getElementById('feedback-form').reset();
+        console.info('Feedback submitted:', title);
+    }
+
+    // Log management
+    displayLogs() {
+        this.filterLogs();
+    }
+
+    filterLogs() {
+        const filter = document.getElementById('log-filter').value;
+        const container = document.getElementById('logs-display');
+        
+        const filteredLogs = filter ? this.logs.filter(log => log.level === filter) : this.logs;
+        
+        container.innerHTML = filteredLogs.map(log => `
+            <div class="log-entry ${log.level}">
+                <span class="log-timestamp">${new Date(log.timestamp).toLocaleString('ja-JP')}</span>
+                [${log.level.toUpperCase()}] ${log.message}
+            </div>
+        `).join('');
+        
+        container.scrollTop = container.scrollHeight;
+    }
+
+    exportLogs() {
+        const csv = ['Timestamp,Level,Message']
+            .concat(this.logs.map(log => `"${log.timestamp}","${log.level}","${log.message.replace(/"/g, '""')}"`))
+            .join('\n');
+        
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `logs-${new Date().toISOString().split('T')[0]}.csv`;
+        link.click();
+        this.showToast('ログをエクスポートしました', 'success');
+    }
+
+    clearLogs() {
+        if (confirm('ログをクリアしますか？')) {
+            this.logs = [];
+            this.displayLogs();
+            this.showToast('ログをクリアしました', 'success');
+        }
+    }
+
+    // Utility functions
+    showModal(modalId) {
+        document.getElementById(modalId).classList.remove('hidden');
+    }
+
+    hideModal(modalId) {
+        document.getElementById(modalId).classList.add('hidden');
     }
 
     showToast(message, type = 'info') {
-        const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
-        toast.className = `toast toast--${type}`;
+        toast.className = `toast ${type}`;
         toast.textContent = message;
-
-        container.appendChild(toast);
-
+        document.body.appendChild(toast);
+        
         setTimeout(() => {
             toast.remove();
         }, 3000);
     }
 }
 
-// アプリケーション初期化
+// Initialize app when DOM is loaded
 let app;
 document.addEventListener('DOMContentLoaded', () => {
     app = new SurveyApp();
-    
-    // PWA対応
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('data:text/javascript,/* Service Worker */');
-    }
-
-    // テキストエリアの自動リサイズ
-    document.addEventListener('input', (e) => {
-        if (e.target.classList.contains('auto-resize-textarea')) {
-            e.target.style.height = 'auto';
-            e.target.style.height = e.target.scrollHeight + 'px';
-            
-            // 文字数カウント
-            const charCount = e.target.nextElementSibling;
-            if (charCount && charCount.classList.contains('char-count')) {
-                const current = e.target.value.length;
-                charCount.querySelector('.char-current').textContent = current;
-                
-                if (current > 500) {
-                    charCount.style.color = 'var(--color-error)';
-                } else {
-                    charCount.style.color = 'var(--color-text-secondary)';
-                }
-            }
-        }
-    });
+    // Make app globally available for debugging
+    window.app = app;
 });
