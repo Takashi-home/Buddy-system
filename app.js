@@ -827,14 +827,12 @@ class SurveyApp {
 
     async pushToGithub() {
         const config = this.surveyData.githubConfig;
-        
         if (!config.token || !config.username || !config.repository) {
             this.showToast('GitHub設定が不完全です', 'error');
             return;
         }
 
         try {
-            // GitHub APIを使用してファイルをプッシュ
             const sources = this.getSourceCode();
             const files = [
                 { path: 'index.html', content: sources.html },
@@ -843,15 +841,57 @@ class SurveyApp {
                 { path: 'data.json', content: JSON.stringify(this.surveyData, null, 2) }
             ];
 
-            // 実際のGitHub API呼び出しは省略（セキュリティ上の理由）
-            // ここでは成功をシミュレート
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
+            for (const file of files) {
+                await this.uploadFileToGithub(config, file.path, file.content);
+            }
+
             this.showToast('GitHubにプッシュしました', 'success');
             this.closeSourceModal();
         } catch (error) {
             console.error('GitHub push error:', error);
             this.showToast('GitHubへのプッシュに失敗しました', 'error');
+        }
+    }
+
+    async uploadFileToGithub(config, path, content) {
+        const apiUrl = `https://api.github.com/repos/${config.username}/${config.repository}/contents/${path}`;
+        const branch = 'main';
+
+        // 既存ファイルのSHAを取得
+        let sha = undefined;
+        try {
+            const res = await fetch(`${apiUrl}?ref=${branch}`, {
+                headers: {
+                    Authorization: `token ${config.token}`,
+                    Accept: 'application/vnd.github.v3+json'
+                }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                sha = data.sha;
+            }
+        } catch (e) {
+            // ファイルが存在しない場合は無視
+        }
+
+        // ファイルをアップロード
+        const res = await fetch(apiUrl, {
+            method: 'PUT',
+            headers: {
+                Authorization: `token ${config.token}`,
+                Accept: 'application/vnd.github.v3+json'
+            },
+            body: JSON.stringify({
+                message: `Update ${path} from survey app`,
+                content: btoa(unescape(encodeURIComponent(content))),
+                branch,
+                ...(sha ? { sha } : {})
+            })
+        });
+
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.message || 'GitHubアップロード失敗');
         }
     }
 
