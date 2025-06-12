@@ -1,0 +1,94 @@
+{
+  "surveys": [
+    {
+      "name": "田中太郎",
+      "grade": "小1",
+      "responses": {
+        "camp": {
+          "rating": "とても楽しい",
+          "text": ""
+        },
+        "lifestyle": {
+          "rating": "とても頑張っている",
+          "text": ""
+        },
+        "improvement": {
+          "rating": "とても身についた",
+          "text": ""
+        }
+      },
+      "timestamp": "2025-06-12T14:00:53.806Z",
+      "id": 1
+    },
+    {
+      "name": "佐藤花子",
+      "grade": "小2",
+      "responses": {
+        "camp": {
+          "rating": "とても楽しい",
+          "text": ""
+        },
+        "lifestyle": {
+          "rating": "とても頑張っている",
+          "text": ""
+        },
+        "improvement": {
+          "rating": "身についた",
+          "text": ""
+        }
+      },
+      "timestamp": "2025-06-12T14:13:39.159Z",
+      "id": 2
+    }
+  ],
+  "settings": {
+    "names": [
+      "田中太郎",
+      "佐藤花子",
+      "山田次郎",
+      "鈴木美咲",
+      "高橋健太",
+      "渡辺愛子",
+      "伊藤翔太",
+      "中村真美",
+      "小林大輝",
+      "加藤さくら"
+    ],
+    "questions": {
+      "camp": {
+        "label": "合宿について（ガード昼休み等）",
+        "type": "rating_with_text",
+        "options": [
+          "とても楽しい",
+          "楽しい",
+          "普通",
+          "つまらない"
+        ],
+        "textPrompt": "詳しく教えてください"
+      },
+      "lifestyle": {
+        "label": "私生活について",
+        "type": "rating_with_text",
+        "options": [
+          "とても頑張っている",
+          "頑張っている",
+          "普通",
+          "あまり頑張れていない"
+        ],
+        "textPrompt": "どんなことを頑張っていますか"
+      },
+      "improvement": {
+        "label": "頑張ってほしいこと（主体性等）",
+        "type": "rating_with_text",
+        "options": [
+          "とても身についた",
+          "身についた",
+          "普通",
+          "まだ身についていない"
+        ],
+        "textPrompt": "どのような場面で感じますか"
+      }
+    }
+  },
+  "timestamp": "2025-06-12T14:19:58.794Z"
+}
