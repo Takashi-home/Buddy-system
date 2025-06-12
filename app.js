@@ -616,15 +616,27 @@ self.addEventListener('fetch', event => {
 
     async handleSurveySubmit() {
         try {
-            const formData = new FormData(document.getElementById('survey-form'));
-            const name = formData.get('student-name');
-            const grade = formData.get('student-grade');
-            
+            const form = document.getElementById('survey-form');
+            const formData = new FormData(form);
+
+            // select要素から直接値を取得（FormDataが空文字になる場合の対策）
+            let name = formData.get('student-name');
+            let grade = formData.get('student-grade');
+
+            if (!name) {
+                const select = form.querySelector('#student-name');
+                name = select && select.value ? select.value : '';
+            }
+            if (!grade) {
+                const select = form.querySelector('#student-grade');
+                grade = select && select.value ? select.value : '';
+            }
+
             if (!name || !grade) {
                 this.showToast('氏名と学年を選択してください', 'error');
                 return;
             }
-            
+
             const responses = {};
             Object.keys(this.surveyQuestions).forEach(key => {
                 responses[key] = {
@@ -632,19 +644,19 @@ self.addEventListener('fetch', event => {
                     text: formData.get(`${key}-text`) || ''
                 };
             });
-            
+
             const survey = {
                 name,
                 grade,
                 responses,
                 timestamp: new Date().toISOString()
             };
-            
+
             await this.saveToDB('surveys', survey);
             this.showToast('アンケートを送信しました', 'success');
-            document.getElementById('survey-form').reset();
+            form.reset();
             console.info('Survey submitted for:', name);
-            
+
         } catch (error) {
             console.error('Failed to submit survey:', error);
             this.showToast('送信に失敗しました', 'error');
@@ -652,10 +664,25 @@ self.addEventListener('fetch', event => {
     }
 
     showPreview() {
-        const formData = new FormData(document.getElementById('survey-form'));
-        const name = formData.get('student-name') || '未選択';
-        const grade = formData.get('student-grade') || '未選択';
-        
+        // <select>の値取得はFormDataではname属性が必要
+        // name属性が抜けている場合はここで取得し直す
+        const form = document.getElementById('survey-form');
+        const formData = new FormData(form);
+
+        // select要素から直接値を取得（FormDataが空文字になる場合の対策）
+        let name = formData.get('student-name');
+        let grade = formData.get('student-grade');
+
+        // select要素のvalueが空文字の場合は未選択扱い
+        if (!name) {
+            const select = form.querySelector('#student-name');
+            name = select && select.value ? select.value : '未選択';
+        }
+        if (!grade) {
+            const select = form.querySelector('#student-grade');
+            grade = select && select.value ? select.value : '未選択';
+        }
+
         let previewHTML = `
             <div class="form-group">
                 <strong>氏名:</strong> ${name}
@@ -664,11 +691,11 @@ self.addEventListener('fetch', event => {
                 <strong>学年:</strong> ${grade}
             </div>
         `;
-        
+
         Object.entries(this.surveyQuestions).forEach(([key, question]) => {
             const rating = formData.get(key) || '未選択';
             const text = formData.get(`${key}-text`) || '';
-            
+
             previewHTML += `
                 <div class="form-group">
                     <strong>${question.label}:</strong> ${rating}
@@ -676,7 +703,7 @@ self.addEventListener('fetch', event => {
                 </div>
             `;
         });
-        
+
         document.getElementById('preview-content').innerHTML = previewHTML;
         this.showModal('preview-modal');
     }
@@ -956,12 +983,12 @@ self.addEventListener('fetch', event => {
     async handleGitHubBackup() {
         const token = document.getElementById('github-token').value;
         const repo = document.getElementById('github-repo').value;
-        
+    
         if (!token || !repo) {
             this.showToast('トークンとリポジトリ名を入力してください', 'error');
             return;
         }
-        
+    
         try {
             const surveys = await this.getAllFromDB('surveys');
             const backupData = {
@@ -972,27 +999,44 @@ self.addEventListener('fetch', event => {
                 },
                 timestamp: new Date().toISOString()
             };
-            
-            const response = await fetch(`https://api.github.com/repos/${repo}/contents/backup/data-${Date.now()}.json`, {
+    
+            const path = `backup/data-${Date.now()}.json`;
+    
+            // UTF-8 Base64エンコード
+            function toBase64(str) {
+                return btoa(unescape(encodeURIComponent(str)));
+            }
+    
+            const content = toBase64(JSON.stringify(backupData, null, 2));
+    
+            const url = `https://api.github.com/repos/${repo}/contents/${path}`;
+            const body = {
+                message: 'Auto backup from survey app',
+                content: content
+            };
+    
+            const res = await fetch(url, {
                 method: 'PUT',
                 headers: {
                     'Authorization': `token ${token}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    message: 'Auto backup from survey app',
-                    content: btoa(JSON.stringify(backupData, null, 2))
-                })
+                body: JSON.stringify(body)
             });
-            
-            if (response.ok) {
+    
+            const result = await res.json();
+    
+            if (res.ok) {
                 this.showToast('バックアップが完了しました', 'success');
                 document.getElementById('github-status').innerHTML = '<div class="status status--success">バックアップ成功</div>';
                 console.info('GitHub backup successful');
             } else {
-                throw new Error('Backup failed');
+                // エラー内容を表示
+                this.showToast(`バックアップ失敗: ${result.message}`, 'error');
+                document.getElementById('github-status').innerHTML = `<div class="status status--error">バックアップ失敗: ${result.message}</div>`;
+                console.error('GitHub backup failed:', result);
             }
-            
+    
         } catch (error) {
             console.error('GitHub backup failed:', error);
             this.showToast('バックアップに失敗しました', 'error');
@@ -1007,17 +1051,53 @@ self.addEventListener('fetch', event => {
     async handleFeedbackSubmit() {
         const title = document.getElementById('feedback-title').value;
         const description = document.getElementById('feedback-description').value;
-        
+        const token = document.getElementById('github-token').value;
+        const repo = document.getElementById('github-repo').value;
+
         if (!title || !description) {
             this.showToast('タイトルと詳細を入力してください', 'error');
             return;
         }
-        
-        // Create GitHub issue (simplified)
-        this.showToast('フィードバックを受け付けました', 'success');
-        this.hideModal('feedback-modal');
-        document.getElementById('feedback-form').reset();
-        console.info('Feedback submitted:', title);
+        if (!token || !repo) {
+            this.showToast('トークンとリポジトリ名を入力してください', 'error');
+            return;
+        }
+
+        try {
+            const url = `https://api.github.com/repos/${repo}/issues`;
+            const body = {
+                title: title,
+                body: description
+            };
+
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Accept': 'application/vnd.github+json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
+            });
+
+            const result = await res.json();
+
+            if (res.ok) {
+                this.showToast('フィードバックをGitHub Issueとして登録しました', 'success');
+                this.hideModal('feedback-modal');
+                document.getElementById('feedback-form').reset();
+                document.getElementById('github-status').innerHTML = '<div class="status status--success">Issue作成成功</div>';
+                console.info('Feedback submitted as GitHub Issue:', result.html_url);
+            } else {
+                this.showToast(`Issue作成失敗: ${result.message}`, 'error');
+                document.getElementById('github-status').innerHTML = `<div class="status status--error">Issue作成失敗: ${result.message}</div>`;
+                console.error('GitHub Issue creation failed:', result);
+            }
+        } catch (error) {
+            console.error('GitHub Issue creation failed:', error);
+            this.showToast('Issue作成に失敗しました', 'error');
+            document.getElementById('github-status').innerHTML = '<div class="status status--error">Issue作成失敗</div>';
+        }
     }
 
     // Log management
