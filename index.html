@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>子供会アンケート管理システム</title>
+    <meta name="description" content="子供会活動のアンケート収集とデータ管理システム">
+    <meta name="theme-color" content="#21808D">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoi5a2Q5L6b5Lya44Ki44Oz44Kx44O844OI566h55CG44K344K544OG44OgIiwic2hvcnRfbmFtZSI6IuWtkOkOq0O844Ki44Oz44Kx44O844OiIiwic3RhcnRfdXJsIjoiLyIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiNGQ0ZDRjkiLCJ0aGVtZV9jb2xvciI6IiMyMTgwOEQiLCJpY29ucyI6W3sic3JjIjoiZGF0YTppbWFnZS9zdmcreG1sO2Jhc2U2NCxQSE4yWnlCNGJXeHVjejBpYUhSMGNEb3ZMM2QzZHk1M00zb3ZNakF3TUM5emRtY2lJSGRwWkhSb1BTSTFNVElpSUdobGFXZG9kRDBpTlRFeUlpQjJhV1YzUW05NFBTSXdJREFnTlRFeUlEVXhNaUkrUEhKbFkzUWdlRDBpTUNJZ2VUMGlNQ0lnZDJsa2RHZzlJalV4TWlJZ2FHVnBaMmgwUFNJMU1USWlJR1pwYkd3OUlpTXlNVGd3T0VRaUx6NDhkR1Y0ZENCNFBTSTFNU0lnZVQwaU16QWlJR1pwYkd3OUlpTkdRMFpEUmpraUlHWnZiblF0Wm1GdGFXeDVQU0pCY21saGJDSWdabTl1ZEMxemFYcGxQU0l4T0NJK9C8k5PuOYaXNDR0I2RjM0Y2T2pNOEx6OTBa", InNpemUiOiI1MTJYNDV4MTJInsiYXJjX2luY0jsILCJpY29ucGRhEQiOjSIzMiJ9XX0=">
+    
+    <!-- iOS Safari specifics -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="子供会アンケート">
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Loading Screen -->
+        <div id="loading-screen" class="loading-screen">
+            <div class="loading-spinner"></div>
+            <p>読み込み中...</p>
+        </div>
+
+        <!-- Login Screen -->
+        <div id="login-screen" class="screen hidden">
+            <div class="container">
+                <div class="card login-card">
+                    <div class="card__body">
+                        <h1>子供会アンケート管理システム</h1>
+                        <form id="login-form" class="form-group">
+                            <label for="password" class="form-label">パスワード</label>
+                            <input type="password" id="password" class="form-control" required>
+                            <button type="submit" class="btn btn--primary btn--full-width mt-8">ログイン</button>
+                        </form>
+                        <div id="login-error" class="status status--error mt-8 hidden">
+                            パスワードが正しくありません
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Navigation -->
+        <nav id="main-nav" class="main-nav hidden">
+            <div class="nav-header">
+                <h2>子供会アンケート</h2>
+                <div class="user-info">
+                    <span id="user-role" class="status status--info"></span>
+                    <button id="logout-btn" class="btn btn--sm btn--secondary">ログアウト</button>
+                </div>
+            </div>
+            <div class="nav-tabs">
+                <button class="nav-tab active" data-screen="dashboard">ダッシュボード</button>
+                <button class="nav-tab" data-screen="survey">アンケート入力</button>
+                <button class="nav-tab" data-screen="data">データ閲覧</button>
+                <button class="nav-tab" data-screen="admin">管理画面</button>
+            </div>
+        </nav>
+
+        <!-- Dashboard Screen -->
+        <div id="dashboard-screen" class="screen hidden">
+            <div class="container">
+                <div class="dashboard-grid">
+                    <div class="card stats-card">
+                        <div class="card__body">
+                            <h3>総回答数</h3>
+                            <div class="stat-number" id="total-responses">0</div>
+                        </div>
+                    </div>
+                    <div class="card stats-card">
+                        <div class="card__body">
+                            <h3>今月の回答</h3>
+                            <div class="stat-number" id="monthly-responses">0</div>
+                        </div>
+                    </div>
+                    <div class="card stats-card">
+                        <div class="card__body">
+                            <h3>参加児童数</h3>
+                            <div class="stat-number" id="unique-children">0</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card chart-card">
+                    <div class="card__body">
+                        <h3>満足度分布</h3>
+                        <canvas id="satisfaction-chart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+
+                <div class="card chart-card">
+                    <div class="card__body">
+                        <h3>学年別統計</h3>
+                        <canvas id="grade-chart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Survey Screen -->
+        <div id="survey-screen" class="screen hidden">
+            <div class="container">
+                <div class="card survey-card">
+                    <div class="card__body">
+                        <h2>アンケート入力</h2>
+                        <form id="survey-form">
+                            <div class="form-group">
+                                <label for="student-name" class="form-label">氏名</label>
+                                <select id="student-name" class="form-control" required>
+                                    <option value="">選択してください</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="student-grade" class="form-label">学年</label>
+                                <select id="student-grade" class="form-control" required>
+                                    <option value="">選択してください</option>
+                                </select>
+                            </div>
+
+                            <div class="survey-questions" id="survey-questions">
+                                <!-- Dynamic survey questions will be inserted here -->
+                            </div>
+
+                            <div class="form-actions">
+                                <button type="button" id="preview-btn" class="btn btn--secondary">プレビュー</button>
+                                <button type="submit" class="btn btn--primary">送信</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Screen -->
+        <div id="data-screen" class="screen hidden">
+            <div class="container">
+                <div class="data-controls">
+                    <div class="search-bar">
+                        <input type="text" id="search-input" class="form-control" placeholder="名前で検索...">
+                        <select id="grade-filter" class="form-control">
+                            <option value="">全学年</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="student-cards" class="student-cards">
+                    <!-- Student cards will be dynamically generated -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Admin Screen -->
+        <div id="admin-screen" class="screen hidden">
+            <div class="container">
+                <div class="admin-tabs">
+                    <button class="admin-tab active" data-tab="users">ユーザー管理</button>
+                    <button class="admin-tab" data-tab="questions">質問管理</button>
+                    <button class="admin-tab" data-tab="github">GitHub連携</button>
+                    <button class="admin-tab" data-tab="logs">ログ管理</button>
+                </div>
+
+                <div id="users-tab" class="admin-content">
+                    <div class="card">
+                        <div class="card__body">
+                            <h3>氏名リスト管理</h3>
+                            <div class="name-list-controls">
+                                <input type="text" id="new-name" class="form-control" placeholder="新しい名前">
+                                <button id="add-name-btn" class="btn btn--primary">追加</button>
+                            </div>
+                            <div id="name-list" class="name-list">
+                                <!-- Names will be dynamically populated -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="questions-tab" class="admin-content hidden">
+                    <div class="card">
+                        <div class="card__body">
+                            <h3>質問項目管理</h3>
+                            <div id="questions-editor">
+                                <!-- Questions editor will be populated -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="github-tab" class="admin-content hidden">
+                    <div class="card">
+                        <div class="card__body">
+                            <h3>GitHub連携設定</h3>
+                            <div class="form-group">
+                                <label for="github-token" class="form-label">Personal Access Token</label>
+                                <input type="password" id="github-token" class="form-control">
+                            </div>
+                            <div class="form-group">
+                                <label for="github-repo" class="form-label">リポジトリ名</label>
+                                <input type="text" id="github-repo" class="form-control" placeholder="username/repository">
+                            </div>
+                            <div class="github-actions">
+                                <button id="backup-btn" class="btn btn--primary">データバックアップ</button>
+                                <button id="sync-btn" class="btn btn--secondary">同期</button>
+                            </div>
+                            <div id="github-status" class="mt-8"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="logs-tab" class="admin-content hidden">
+                    <div class="card">
+                        <div class="card__body">
+                            <h3>ログ管理</h3>
+                            <div class="log-controls">
+                                <select id="log-filter" class="form-control">
+                                    <option value="">全レベル</option>
+                                    <option value="error">エラー</option>
+                                    <option value="warn">警告</option>
+                                    <option value="info">情報</option>
+                                    <option value="log">ログ</option>
+                                </select>
+                                <button id="export-logs-btn" class="btn btn--secondary">CSVエクスポート</button>
+                                <button id="clear-logs-btn" class="btn btn--outline">ログクリア</button>
+                            </div>
+                            <div id="logs-display" class="logs-display">
+                                <!-- Logs will be displayed here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Preview Modal -->
+        <div id="preview-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>アンケートプレビュー</h3>
+                    <button id="close-preview" class="btn btn--outline btn--sm">閉じる</button>
+                </div>
+                <div class="modal-body" id="preview-content">
+                    <!-- Preview content will be inserted here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Feedback Modal -->
+        <div id="feedback-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>改善提案</h3>
+                    <button id="close-feedback" class="btn btn--outline btn--sm">閉じる</button>
+                </div>
+                <div class="modal-body">
+                    <form id="feedback-form">
+                        <div class="form-group">
+                            <label for="feedback-title" class="form-label">タイトル</label>
+                            <input type="text" id="feedback-title" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="feedback-description" class="form-label">詳細</label>
+                            <textarea id="feedback-description" class="form-control" rows="4" required></textarea>
+                        </div>
+                        <button type="submit" class="btn btn--primary">送信</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Action Button -->
+        <button id="fab" class="fab hidden" title="改善提案">
+            <span>💡</span>
+        </button>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
