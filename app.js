@@ -613,16 +613,15 @@ self.addEventListener('fetch', event => {
         
         console.info('Survey questions rendered');
     }
-
     async handleSurveySubmit() {
         try {
             const form = document.getElementById('survey-form');
             const formData = new FormData(form);
-
+    
             // select要素から直接値を取得（FormDataが空文字になる場合の対策）
             let name = formData.get('student-name');
             let grade = formData.get('student-grade');
-
+    
             if (!name) {
                 const select = form.querySelector('#student-name');
                 name = select && select.value ? select.value : '';
@@ -631,12 +630,12 @@ self.addEventListener('fetch', event => {
                 const select = form.querySelector('#student-grade');
                 grade = select && select.value ? select.value : '';
             }
-
+    
             if (!name || !grade) {
                 this.showToast('氏名と学年を選択してください', 'error');
                 return;
             }
-
+    
             const responses = {};
             Object.keys(this.surveyQuestions).forEach(key => {
                 responses[key] = {
@@ -644,19 +643,26 @@ self.addEventListener('fetch', event => {
                     text: formData.get(`${key}-text`) || ''
                 };
             });
-
+    
             const survey = {
                 name,
                 grade,
                 responses,
                 timestamp: new Date().toISOString()
             };
-
+    
             await this.saveToDB('surveys', survey);
+    
+            // --- Firestoreにも保存 ---
+            if (window.firestore) {
+                await window.firestore.collection('surveys').add(survey);
+            }
+            // ------------------------
+    
             this.showToast('アンケートを送信しました', 'success');
             form.reset();
             console.info('Survey submitted for:', name);
-
+    
         } catch (error) {
             console.error('Failed to submit survey:', error);
             this.showToast('送信に失敗しました', 'error');
@@ -1045,7 +1051,25 @@ self.addEventListener('fetch', event => {
     }
 
     async handleGitHubSync() {
-        this.showToast('同期機能は開発中です', 'info');
+        // Firestoreから全データ取得してローカルDBに保存
+        if (!window.firestore) {
+            this.showToast('Firestoreが利用できません', 'error');
+            return;
+        }
+        try {
+            const snapshot = await window.firestore.collection('surveys').get();
+            const surveys = [];
+            snapshot.forEach(doc => surveys.push(doc.data()));
+            // ローカルDBを上書き
+            for (const survey of surveys) {
+                await this.saveToDB('surveys', survey);
+            }
+            this.showToast('Firestoreから同期しました', 'success');
+            document.getElementById('github-status').innerHTML = '<div class="status status--success">Firestore同期成功</div>';
+        } catch (e) {
+            this.showToast('Firestore同期失敗', 'error');
+            document.getElementById('github-status').innerHTML = '<div class="status status--error">Firestore同期失敗</div>';
+        }
     }
 
     async handleFeedbackSubmit() {
